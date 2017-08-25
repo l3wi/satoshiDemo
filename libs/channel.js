@@ -17,7 +17,7 @@ export default class Channel {
   static TREE_DEPTH = 4
 
   static flash = {}
-
+  
   // Initiate the local state and store it localStorage
   static async initialize(
     userID = shortid.generate(),
@@ -27,7 +27,8 @@ export default class Channel {
     treeDepth = Channel.TREE_DEPTH,
     balance = 0,
     deposit = Array(Channel.SIGNERS_COUNT).fill(0),
-    stakes = [1].concat(Array(Channel.SIGNERS_COUNT - 1).fill(0))
+    stakes = [1].concat(Array(Channel.SIGNERS_COUNT - 1).fill(0)),
+    ready = () => {}
   ) {
     // Escape the function when server rendering
     if (!isWindow()) return false
@@ -40,7 +41,6 @@ export default class Channel {
        return localState
     }
     console.log('Initialising Channel')
-    
 
     // Initialize state object
     const state = {
@@ -63,71 +63,28 @@ export default class Channel {
     // Initiate the state in local storage
     await store.set("state", state);
 
-    // Get a new digest
-    // Fetch new multisig addresses
-    // consists of { root, remainder }
-    const digests = [];
-    for (let i = 0; i < treeDepth + 1; i++) {
-      const digest = await Channel.getNewDigest();
-      digests.push(digest);
-    }
-    const addresses = await Channel.register(digests, userID);
+    Channel.isReady = false;
 
-    // Update root and remainder address
-    state.flash.remainderAddress = addresses.remainder;
-    state.flash.root = addresses.root;
+    const worker = new Worker('static/js/worker.js');
+    worker.postMessage([state, userID]);
+    worker.onMessage(async (e) => {
+     
+      // update state in local storage
+      const updatedState = e.data[0];   
+      await store.set("state", updatedState)
 
-    // Update root & remainder in state
-    await store.set("state", state)
-
-    // Create a flash instance
-    Channel.flash = new Flash({
-      ...state.flash
-    })
-
-    return state
-  }
-
-  static async register(digests, userID) {
-    console.log('Address Digests: ', digests)
-
-    const opts = {
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json'
-      },
-      method: "POST",
-      body: JSON.stringify({
-        id: userID,
-        digests: digests
+      // Create a flash instance
+      Channel.flash = new Flash({
+        ...updatedState.flash
       })
-    }
-    console.log(opts)
-    // Send digests to server and obtain new multisig addresses
-    const response = await API("register", opts)
 
-    console.log('Server Digests: ', response)
-    const serverDigests = response.digests;
-    let multisigs = digests.map((digest, index) => {      
-      let addy = multisig.composeAddress([digest, serverDigests[index]]);
-      addy.index = digest.index;
-      addy.securitySum = digest.security + serverDigests[index].security;
-      addy.security = digest.security;
-      return addy;
+      Channel.isReady = true;
+      
+      // Execute callback
+      ready(updatedState);
     });
-    
-    const remainderAddress = multisigs.shift();
 
-    for(let i = 1; i < multisigs.length; i++) {
-        multisigs[i-1].children.push(multisigs[i]);
-    }
-    console.log(multisigs[0]);
-    console.log(iota.utils.addChecksum(multisigs[0].address))
-    
-    return {
-      remainder: remainderAddress,
-      root: multisigs.shift()
-    };
+    return state;
   }
 
   static async getNewBranch(userID, address, digests) {
@@ -161,13 +118,13 @@ export default class Channel {
     
     multisigs.unshift(address);
     for(let i = 1; i < multisigs.length; i++) {
-        multisigs[i-1].children.push(multisigs[i]);
+      multisigs[i-1].children.push(multisigs[i]);
     }
     return address;
   }
 
   // Get a new digest and update index in state
-  static async getNewDigest() {
+   static async getNewDigest() {
     // Fetch state from localStorage
     const state = store.get("state");
 
@@ -189,7 +146,7 @@ export default class Channel {
     return digest
   }
 
-  // Obtain address by sending digest, update multisigs in state
+ // Obtain address by sending digest, update multisigs in state
   static async getNewAddress(digest) {
     
     const state = await store.get("state")
@@ -415,13 +372,13 @@ export default class Channel {
 
     if (res.bundles) {
         transfer.applyTransfers(
-        state.flash.root, 
-        state.flash.deposit, 
-        state.flash.stakes, 
-        state.flash.outputs, 
-        state.flash.remainderAddress, 
-        state.flash.transfers, 
-        res.bundles);
+          state.flash.root, 
+          state.flash.deposit, 
+          state.flash.stakes, 
+          state.flash.outputs, 
+          state.flash.remainderAddress, 
+          state.flash.transfers, 
+          res.bundles);
       // Save updated state
       await store.set("state", state)
     } else {
